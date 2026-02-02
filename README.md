@@ -10,7 +10,7 @@ llm-workspace is a Node.js library that provides a real, stateful workspace for 
 
 * **Isolation:** Execution is strictly sandboxed to a specific directory. Path traversal attacks are blocked.
 * **Persistence:** Files, git repositories, and build artifacts persist across agent steps.
-* **Stateful Shell:** Environment variables (like API_KEY) persist between shell commands.
+* **Stateful Shell:** Environment variables (like `API_KEY`) persist between shell commands.
 * **Standard Toolset:** Provides a deterministic set of tools for file manipulation, surgical code editing, and system inspection.
 * **Provider Adapters:** Built-in adapters for OpenAI, Anthropic, and Gemini.
 
@@ -154,7 +154,8 @@ main().catch(console.error);
 
 ### 3. Google Gemini
 
-This example uses `@google/generative-ai` SDK.
+This example uses `@google/generative-ai` SDK. 
+*Note: Gemini's function calling requires sending the function response back as a specific 'functionResponse' part.*
 
 ```typescript
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -171,37 +172,23 @@ const model = genAI.getGenerativeModel({
 async function main() {
   await workspace.init();
 
-  const chat = model.startChat({
-    history: [{ role: "user", parts: [{ text: "Create a file named data.txt with random numbers." }] }],
-  });
-
-  while (true) {
-    const result = await chat.sendMessageStream([]); 
-    // Note: In a real loop, you often send empty content to let the model generate the next step
-    // but the initial call starts the chain. Here we assume we are iterating on a chat object.
-    // For simplicity, let's look at the standard turn-based flow:
-    
-    // We actually need to handle the *response* from the previous turn.
-    // Below is a simplified single-turn loop logic for clarity.
-  }
-}
-
-// Full Working Gemini Loop
-async function runGeminiAgent() {
-  await workspace.init();
   const chat = model.startChat();
   
-  let result = await chat.sendMessage("Write a Python script to calculate Fibonacci numbers.");
+  // Initial Prompt
+  let result = await chat.sendMessage("Write a Python script to calculate Fibonacci numbers and save it.");
 
+  // Interaction Loop
   while (true) {
-    const response = await result.response;
+    const response = result.response;
     const calls = response.functionCalls();
 
+    // If no function calls, we have the final text response
     if (!calls || calls.length === 0) {
       console.log("Agent:", response.text());
       break;
     }
 
+    // Execute all requested tools
     const toolParts = [];
     for (const call of calls) {
       console.log(`Executing ${call.name}...`);
@@ -210,22 +197,28 @@ async function runGeminiAgent() {
       try {
         const tool = workspace.tools.find(t => t.name === call.name);
         if (!tool) throw new Error(`Tool ${call.name} not found`);
+        
+        // Execute logic
         output = await tool.execute(call.args);
       } catch (error) {
         output = `Error: ${error.message}`;
       }
 
+      // Format response for Gemini
       toolParts.push({
-        functionResponse: { name: call.name, response: { output } }
+        functionResponse: {
+          name: call.name,
+          response: { output: output } // Gemini expects an object here
+        }
       });
     }
 
-    // Send tool outputs back to model
+    // Send tool outputs back to the model to continue the conversation
     result = await chat.sendMessage(toolParts);
   }
 }
 
-runGeminiAgent().catch(console.error);
+main().catch(console.error);
 ```
 
 ## Tool Reference
@@ -252,7 +245,7 @@ The workspace comes pre-loaded with the following tools. All tools are sandboxed
 | Tool | Description |
 | :--- | :--- |
 | `run_shell_cmd` | Execute a shell command. CWD is always the workspace root. |
-| `set_env_var` | Set an environment variable (e.g., API_KEY) that persists for future commands. |
+| `set_env_var` | Set an environment variable (e.g., `API_KEY`) that persists for future commands. |
 
 ### Network
 | Tool | Description |
