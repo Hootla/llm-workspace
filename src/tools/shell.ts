@@ -25,7 +25,7 @@ export const createShellTools = (
           env: envVars, // Inject the persistent env vars
         });
 
-        return { stdout, stderr, exitCode };
+        return { stdout, stderr, exitCode: exitCode ?? null };
       } catch (error: any) {
         return {
           error: error.message || 'Unknown execution error',
