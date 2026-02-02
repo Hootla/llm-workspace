@@ -1,18 +1,18 @@
 # @hootla/llm-workspace
 
-llm-workspace is a Node.js library that provides a persistent, isolated execution environment for LLM-driven agents.
+A persistent, isolated execution environment for LLM-driven agents.
 
-It addresses the core limitation of most agent frameworks: the lack of a real "place" to work. While many frameworks treat tools as stateless function calls, llm-workspace treats the environment as a first-class citizen with its own filesystem, shell state, and lifecycle.
+## Overview
 
-This library is not an agent framework. It is the infrastructure layer that sits beneath your agent, giving it a computer to operate.
+llm-workspace is a Node.js library that provides a real, stateful workspace for agents. It solves the "dangling state" problem where agents are forced to operate using stateless function calls. Instead, llm-workspace treats the agent's environment as a first-class citizen with a lifecycle, a filesystem, and a shell.
 
-## Key Features
+**Core Features:**
 
-* **Persistent Filesystem:** Files written in step 1 are available in step 10.
-* **Sandboxed Execution:** Strict path validation prevents agents from accessing files outside the workspace root.
-* **Stateful Shell:** Environment variables and working directories function as expected across multiple commands.
-* **Production-Ready Tools:** Includes surgical text editing, binary file guards, and recursive search limitations to prevent agent crashes.
-* **Model Agnostic:** Works with OpenAI, Anthropic, or local models. It provides the tools; you provide the reasoning.
+* **Isolation:** Execution is strictly sandboxed to a specific directory. Path traversal attacks are blocked.
+* **Persistence:** Files, git repositories, and build artifacts persist across agent steps.
+* **Stateful Shell:** Environment variables (like `API_KEY`) persist between shell commands.
+* **Standard Toolset:** Provides a deterministic set of tools for file manipulation, surgical code editing, and system inspection.
+* **Provider Adapters:** Built-in adapters for OpenAI, Anthropic, and Gemini.
 
 ## Installation
 
@@ -22,85 +22,183 @@ npm install @hootla/llm-workspace
 
 ## Quick Start
 
+This example creates a secure workspace, initializes it, and manually executes a tool.
+
 ```typescript
-import { Workspace } from '@hootla/llm-workspace';
+import { Workspace } from "@hootla/llm-workspace";
 
-// 1. Create a workspace rooted in a specific directory
+// 1. Create the workspace instance
 const workspace = new Workspace({
-  rootDir: './agent-scratchpad',
-  allowedDomains: ['api.github.com', 'google.com'] // Optional network allowlist
+  rootDir: "./agent-playground", // The sandbox root
+  allowedDomains: ["google.com", "api.github.com"], // Network whitelist
 });
 
-await workspace.init();
+async function run() {
+  // 2. Initialize (creates the directory)
+  await workspace.init();
 
-// 2. Execute a tool (e.g., writing a Python script)
-const writeResult = await workspace.tools.find(t => t.name === 'write_file').execute({
-  path: 'main.py',
-  content: 'print("Hello from the workspace")'
+  // 3. Execute tools
+  try {
+    // Write a file
+    const writeResult = await workspace.tools.find(t => t.name === "write_file")
+      .execute({ path: "hello.py", content: "print('Hello World')" });
+    console.log(writeResult);
+
+    // Run it
+    const execResult = await workspace.tools.find(t => t.name === "run_shell_cmd")
+      .execute({ command: "python3", args: ["hello.py"] });
+    
+    console.log(execResult.stdout);
+  } catch (err) {
+    console.error(err);
+  } finally {
+    // 4. Cleanup (optional)
+    await workspace.destroy();
+  }
+}
+
+run();
+```
+
+## Provider Integration
+
+The library includes built-in adapters that convert the workspace tools into the exact format expected by major LLM providers. These adapters also handle "Strict Mode" (Structured Outputs) automatically where supported.
+
+### OpenAI
+
+Uses `adapters.toOpenAITools`. Enables Strict Mode by default.
+
+```typescript
+import OpenAI from "openai";
+import { Workspace, adapters } from "@hootla/llm-workspace";
+
+const workspace = new Workspace({ rootDir: "./playground" });
+const client = new OpenAI();
+
+async function main() {
+  const completion = await client.chat.completions.create({
+    model: "gpt-4-turbo",
+    messages: [{ role: "user", content: "List files in the current directory." }],
+    // Automatically converts to OpenAI function format with strict: true
+    tools: adapters.toOpenAITools(workspace.tools),
+  });
+
+  // Handle tool calls as normal...
+}
+```
+
+### Anthropic
+
+Uses `adapters.toAnthropicTools`.
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+import { Workspace, adapters } from "@hootla/llm-workspace";
+
+const workspace = new Workspace({ rootDir: "./playground" });
+const anthropic = new Anthropic();
+
+async function main() {
+  const msg = await anthropic.messages.create({
+    model: "claude-3-opus-20240229",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Check the system time." }],
+    // Converts to Anthropic tool format
+    tools: adapters.toAnthropicTools(workspace.tools),
+  });
+}
+```
+
+### Google Gemini
+
+Uses `adapters.toGeminiTools`.
+
+```typescript
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { Workspace, adapters } from "@hootla/llm-workspace";
+
+const workspace = new Workspace({ rootDir: "./playground" });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({
+  model: "gemini-1.5-pro",
+  // Converts to Gemini function declarations
+  tools: [{ functionDeclarations: adapters.toGeminiTools(workspace.tools) }]
 });
-
-console.log(writeResult); // "Successfully wrote to main.py"
-
-// 3. Run the script using the shell tool
-const shellResult = await workspace.tools.find(t => t.name === 'run_shell_cmd').execute({
-  command: 'python3',
-  args: ['main.py']
-});
-
-console.log(shellResult.stdout); // "Hello from the workspace"
 ```
 
 ## Tool Reference
 
-The workspace comes pre-loaded with a standardized set of tools designed for autonomous construction and debugging.
+The workspace comes pre-loaded with the following tools. All tools are sandboxed to the `rootDir`.
 
 ### File System
-* **read_file(path):** Read text content. Blocks binary files to prevent errors.
-* **write_file(path, content):** Create or overwrite files.
-* **append_file(path, content):** Append text to existing files.
-* **delete_file(path):** Remove a file.
-* **list_files(path):** List directory contents (non-recursive).
-* **stat_file(path):** Get size, creation time, and type metadata.
+| Tool | Description |
+| :--- | :--- |
+| `read_file` | Read a file as UTF-8 text. Fails on binary files. |
+| `write_file` | Create or overwrite a file. Creates parent directories automatically. |
+| `append_file` | Append text to an existing file. |
+| `delete_file` | Delete a file. |
+| `list_files` | List files and directories in a path (non-recursive). |
+| `stat_file` | Get metadata (size, created/modified times). |
 
 ### Editor (Coding)
-* **replace_in_file(path, old, new):** Surgical string replacement. Handles line-ending normalization automatically.
-* **search_files(path, term):** Recursive text search. Ignores `node_modules` and `.git`.
+| Tool | Description |
+| :--- | :--- |
+| `replace_in_file` | Surgically replace a string in a file. Handles line-ending differences (CRLF/LF). |
+| `search_files` | Recursive grep-style search. Ignores `node_modules` and binary files. |
 
 ### Shell
-* **run_shell_cmd(command, args):** Execute commands rooted in the workspace.
-* **set_env_var(key, value):** Set persistent environment variables (e.g., API_KEY).
+| Tool | Description |
+| :--- | :--- |
+| `run_shell_cmd` | Execute a shell command. CWD is always the workspace root. |
+| `set_env_var` | Set an environment variable (e.g., `API_KEY`) that persists for future commands. |
 
 ### Network
-* **http_request(url, method, ...):** Fetch external resources. Respects the `allowedDomains` configuration.
-* **ping_host(target):** Check connectivity to a remote host.
-* **get_my_ip():** Retrieve public IP and location context.
+| Tool | Description |
+| :--- | :--- |
+| `http_request` | specific URL. Subject to `allowedDomains` whitelist. |
+| `ping_host` | Check if a host is reachable. |
+| `get_my_ip` | Get the public IP and approximate location of the agent. |
 
 ### System
-* **get_current_time():** precise date, time, and timezone information.
-* **get_system_info():** Details on OS architecture, memory, and Node version.
+| Tool | Description |
+| :--- | :--- |
+| `get_current_time` | Get ISO timestamp and local time. |
+| `get_system_info` | Get OS platform, architecture, and memory stats. |
+
+## Configuration
+
+### WorkspaceOptions
+
+```typescript
+interface WorkspaceOptions {
+  // Absolute or relative path to the workspace root.
+  rootDir: string;
+  
+  // Max execution time for shell commands in ms. Default: 10000.
+  shellTimeoutMs?: number;
+
+  // Whitelist of domains for http_request. If undefined, all allowed.
+  allowedDomains?: string[];
+}
+```
 
 ## Security & Isolation
 
-The library employs a **PathGuard** system. All file operations are resolved relative to the workspace root.
+**1. Path Traversal Protection**
+The `PathGuard` class intercepts every file system request. It resolves paths against the `rootDir` and throws an error if the resulting path is outside the sandbox.
+* `read_file("../../etc/passwd")` -> **Error**
+* `write_file("/usr/bin/malware")` -> **Error**
 
-* Attempts to access `../` or absolute paths outside the root will throw a security violation.
-* Shell commands are executed with the CWD set to the workspace root.
-* Network requests can be restricted to specific domains via configuration.
+**2. Binary File Protection**
+Tools like `read_file` and `replace_in_file` automatically detect binary files (by checking for null bytes) and refuse to process them. This prevents agents from corrupting images or compiled binaries by treating them as text strings.
 
-## API Reference
+**3. Shell Scope**
+All shell commands are executed with the `cwd` set to `rootDir`. While this does not prevent an agent from running `cd .. && ls`, the immediate execution context is rooted. For stricter shell isolation, consider running the Node process inside a container.
 
-### Workspace
+## Error Handling
 
-**Constructor**
-`new Workspace(options: WorkspaceOptions)`
-
-* `rootDir` (string): The path on the host machine where the workspace lives.
-* `shellTimeoutMs` (number): Max execution time for shell commands (default: 10000ms).
-* `allowedDomains` (string[]): Whitelist for HTTP requests.
-
-**Methods**
-* `init()`: Creates the workspace directory.
-* `destroy()`: Recursively removes the workspace directory and all contents.
+* **Tool Errors:** If a tool fails (e.g., file not found), it throws a standard JavaScript `Error`. The message is designed to be readable by an LLM so it can self-correct.
+* **Shell Errors:** `run_shell_cmd` does *not* throw on non-zero exit codes. It returns the `exitCode` and `stderr` so the agent can debug the failure (e.g., a compilation error).
 
 ## License
 
