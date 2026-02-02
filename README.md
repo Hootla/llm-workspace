@@ -32,20 +32,68 @@ This example uses the `openai` SDK. It automatically enables "Strict Mode" (Stru
 import OpenAI from "openai";
 import { Workspace, adapters } from "@hootla/llm-workspace";
 
-const workspace = new Workspace({ rootDir: "./playground" });
-const client = new OpenAI();
+// 1. Setup Workspace
+const workspace = new Workspace({
+  rootDir: "./playground",
+  shellTimeoutMs: 20000, 
+  allowedDomains: ["httpbin.org", "google.com", "github.com", "ipapi.co"] 
+});
+
+const client = new OpenAI({
+  apiKey: "sk-proj-"
+});
 
 async function main() {
+  console.log("🚀 Initializing Workspace...");
   await workspace.init();
-  
-  const messages = [
-    { role: "system", content: "You are an autonomous developer." },
-    { role: "user", content: "Create a hello world file and run it." }
-  ];
+
+ const messages = [
+  { 
+    role: "system", 
+    content: `You are an autonomous developer operating inside a persistent, isolated workspace.
+You have access to a real file system, a shell, and the internet.
+
+### 1. THE ENVIRONMENT
+- **Runtime:** You are running in a Node.js environment.
+  - **Primary Language:** Write scripts in JavaScript (.js) or TypeScript (.ts).
+  - **Execution:** Run scripts using 'node script.js'.
+  - **Availability:** Do NOT assume Python, Go, or Ruby are installed unless you verify them first with 'run_shell_cmd'.
+- **Root Directory:** You are sandboxed. All paths are relative to the workspace root.
+- **Persistence:** Files you write and env vars you set ('set_env_var') persist across steps.
+- **Stateless Shell:** The shell does NOT maintain state between commands. 
+  - ❌ WRONG: run_shell_cmd("cd ./src"); run_shell_cmd("ls");
+  - ✅ RIGHT: run_shell_cmd("cd ./src && ls");
+
+### 2. STRATEGIC TOOL USAGE
+- **Editing Code:**
+  - PREFER 'replace_in_file' for existing files. It is faster and safer.
+  - ALWAYS 'read_file' first to get the exact context for the replacement.
+  - 'old_content' must match the file EXACTLY (including whitespace).
+- **File Creation:** Use 'write_file' for new files.
+- **Exploration:** Use 'list_files' and 'search_files' to understand the directory structure before acting.
+
+### 3. NETWORK & SECURITY
+- **http_request:**
+  - Headers must be an array of objects: [{"key": "Content-Type", "value": "application/json"}].
+  - If a request fails with "Security Violation", do NOT retry. The domain is blocked.
+
+### 4. OPERATIONAL LOOP
+1. **Explore:** Verify where you are and what files exist.
+2. **Plan:** briefly describe the next logical step.
+3. **Act:** Execute the tool.
+4. **Verify:** Check the output. If a tool fails (e.g., "Ambiguous match"), analyze the error and self-correct immediately.
+
+You are not a chat bot. You are a builder. Go.` 
+  },
+  { 
+    role: "user", 
+    content: "Build a stunning landing page using any library you want but it must be javascript, react, vite etc. It should be stunning. It should fetch the current weather in Stockholm Sweden and display it in a cool, animated way." 
+  }
+];
 
   while (true) {
     const completion = await client.chat.completions.create({
-      model: "gpt-4-turbo",
+      model: "gpt-5-mini", 
       messages: messages,
       tools: adapters.toOpenAITools(workspace.tools),
       tool_choice: "auto",
@@ -55,30 +103,38 @@ async function main() {
     messages.push(message);
 
     if (!message.tool_calls || message.tool_calls.length === 0) {
-      console.log("Agent:", message.content);
+      console.log(`\n🤖 Agent: ${message.content}`);
       break;
     }
 
-    // Execute all tool calls
+    console.log(`\n⚡ Agent executing ${message.tool_calls.length} tool(s)...`);
+
     for (const toolCall of message.tool_calls) {
       const toolName = toolCall.function.name;
       const args = JSON.parse(toolCall.function.arguments);
       
-      console.log(`Executing ${toolName}...`);
+      process.stdout.write(`   > ${toolName}(...) `);
       
       let result;
       try {
         const tool = workspace.tools.find(t => t.name === toolName);
         if (!tool) throw new Error(`Tool ${toolName} not found`);
+        
         result = await tool.execute(args);
+        console.log("✅ Success");
       } catch (error) {
-        result = `Error: ${error.message}`;
+        console.log(`❌ FAILED`);
+        console.error(`      Error Details: ${error.message}`);
+        result = { error: error.message }; 
       }
 
+      // Serialize Output
+      const content = typeof result === 'string' ? result : JSON.stringify(result);
+      
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
-        content: String(result)
+        content: content
       });
     }
   }
