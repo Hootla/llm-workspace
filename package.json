@@ -1,6 +1,6 @@
 {
   "name": "@hootla/llm-workspace",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "description": "A persistent, isolated workspace with a known tool surface for LLM agents.",
   "main": "dist/index.js",
