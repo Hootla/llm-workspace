@@ -9,7 +9,10 @@ export const createNetworkTools = (allowedDomains?: string[]): WorkspaceTool[] =
     schema: z.object({
       url: z.string().url().describe('The full URL to request'),
       method: z.enum(['GET', 'POST', 'PUT', 'DELETE']).default('GET'),
-      headers: z.record(z.string()).optional().describe('JSON object of request headers'),
+      headers: z.array(z.object({
+        key: z.string().describe('Header name (e.g. Content-Type)'),
+        value: z.string().describe('Header value')
+      })).optional().describe('List of request headers'),
       body: z.string().optional().describe('Request body (for POST/PUT)'),
     }),
     execute: async ({ url, method, headers, body }) => {
@@ -22,12 +25,20 @@ export const createNetworkTools = (allowedDomains?: string[]): WorkspaceTool[] =
         }
       }
 
+      // Transform the array back into a Headers object
+      const headerObj: Record<string, string> = {};
+      if (headers) {
+        for (const h of headers) {
+          headerObj[h.key] = h.value;
+        }
+      }
+
       try {
         const response = await fetch(url, {
           method,
           headers: {
             'User-Agent': 'llm-workspace/1.0',
-            ...headers,
+            ...headerObj,
           },
           body,
         });
@@ -49,29 +60,20 @@ export const createNetworkTools = (allowedDomains?: string[]): WorkspaceTool[] =
     name: 'ping_host',
     description: 'Check reachability of a host or IP address using system ping.',
     schema: z.object({
-      target: z.string().describe('The hostname or IP to ping (e.g., google.com, 1.1.1.1)'),
+      target: z.string().describe('The hostname or IP to ping'),
     }),
     execute: async ({ target }) => {
-      // Basic validation to prevent command injection via target
       if (/[^a-zA-Z0-9.-]/.test(target)) {
-        throw new Error("Invalid target format. Only alphanumeric characters, dots, and hyphens allowed.");
+        throw new Error("Invalid target format.");
       }
-
-      // Determine flags based on OS (Windows uses -n, Unix uses -c)
       const countFlag = process.platform === 'win32' ? '-n' : '-c';
-      const args = [countFlag, '2', target]; // Send 2 packets
+      const args = [countFlag, '2', target];
 
       try {
         const { stdout } = await execa('ping', args, { timeout: 5000 });
-        return {
-          reachable: true,
-          output: stdout
-        };
+        return { reachable: true, output: stdout };
       } catch (error: any) {
-        return {
-          reachable: false,
-          error: error.message || 'Ping failed'
-        };
+        return { reachable: false, error: error.message || 'Ping failed' };
       }
     },
   },
@@ -81,7 +83,6 @@ export const createNetworkTools = (allowedDomains?: string[]): WorkspaceTool[] =
     schema: z.object({}),
     execute: async () => {
       try {
-        // Uses a free, reliable IP echo service
         const response = await fetch('https://ipapi.co/json/');
         if (!response.ok) throw new Error('Failed to fetch IP info');
         const data = await response.json();
